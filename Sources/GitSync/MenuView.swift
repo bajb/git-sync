@@ -161,6 +161,15 @@ struct MenuView: View {
                         .padding(.horizontal, 6)
                         .padding(.vertical, 1)
                         .background(.orange.opacity(0.25), in: Capsule())
+                    Spacer()
+                    Button {
+                        engine.recheckProblems()
+                    } label: {
+                        Label("Recheck", systemImage: "arrow.clockwise")
+                    }
+                    .controlSize(.small)
+                    .disabled(engine.isSyncing)
+                    .help("Re-sync only the out-of-date and failed repos")
                 }
             }
             content()

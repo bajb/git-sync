@@ -4,7 +4,7 @@ import SwiftUI
 @MainActor
 final class SyncEngine: ObservableObject {
     static let staleDays = 7
-    private static let maxConcurrentRepos = 4
+    private static let maxConcurrentRepos = 12
 
     @Published private(set) var vendors: [Vendor] = []
     @Published private(set) var results: [String: RepoResult] = [:]
@@ -75,11 +75,26 @@ final class SyncEngine: ObservableObject {
         if enabled { enabledVendors.insert(name) } else { enabledVendors.remove(name) }
     }
 
+    /// Repos listed as out of date or failed.
+    var problemResults: [RepoResult] {
+        visibleResults.filter { $0.isFailed || $0.isStale(days: Self.staleDays) }
+    }
+
     func syncNow() {
         guard syncTask == nil, !enabledVendors.isEmpty else { return }
         syncDue = false
         syncTask = Task { [weak self] in
-            await self?.runSync()
+            await self?.runSync(only: nil)
+            self?.syncTask = nil
+        }
+    }
+
+    /// Re-syncs just the problem repos, e.g. after fixing them by hand.
+    func recheckProblems() {
+        let repos = problemResults.map(\.repo)
+        guard syncTask == nil, !repos.isEmpty else { return }
+        syncTask = Task { [weak self] in
+            await self?.runSync(only: repos)
             self?.syncTask = nil
         }
     }
@@ -99,17 +114,25 @@ final class SyncEngine: ObservableObject {
         }
     }
 
-    private func runSync() async {
+    /// Syncs `subset`, or every repo of the enabled vendors when nil.
+    private func runSync(only subset: [Repo]?) async {
         isSyncing = true
         defer { isSyncing = false }
 
-        let root = codeRoot, enabled = enabledVendors, branches = syncBranches
-        let scan = await Task.detached { RepoScanner.scan(root: root, enabled: enabled) }.value
-        vendors = scan.vendors
-        progress = (0, scan.repos.count)
+        let branches = syncBranches
+        let repos: [Repo]
+        if let subset {
+            repos = subset
+        } else {
+            let root = codeRoot, enabled = enabledVendors
+            let scan = await Task.detached { RepoScanner.scan(root: root, enabled: enabled) }.value
+            vendors = scan.vendors
+            repos = scan.repos
+        }
+        progress = (0, repos.count)
 
         await withTaskGroup(of: RepoResult?.self) { group in
-            var pending = scan.repos.makeIterator()
+            var pending = repos.makeIterator()
             func startNext() {
                 guard !Task.isCancelled, let repo = pending.next() else { return }
                 group.addTask {
@@ -123,8 +146,8 @@ final class SyncEngine: ObservableObject {
             }
         }
 
-        guard !Task.isCancelled else { return }
-        let scanned = Set(scan.repos.map(\.id))
+        guard !Task.isCancelled, subset == nil else { return }
+        let scanned = Set(repos.map(\.id))
         results = results.filter { scanned.contains($0.key) }
         lastRun = Date()
     }

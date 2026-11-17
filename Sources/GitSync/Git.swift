@@ -54,10 +54,17 @@ enum Git {
         do {
             try process.run()
         } catch {
-            return GitOutput(status: -1, stdout: "", stderr: error.localizedDescription)
+            return GitOutput(status: -1, stdout: "", stderr: "could not launch git: \((error as NSError).code)")
         }
+        // The child holds its own copies of the write ends; ours would keep the reads from ever ending.
+        try? out.fileHandleForWriting.close()
+        try? err.fileHandleForWriting.close()
 
-        let killer = DispatchWorkItem { if process.isRunning { process.terminate() } }
+        // Weak: the queue keeps a cancelled work item until its deadline, and a strong
+        // reference would keep the process and its pipe descriptors open that whole time.
+        let killer = DispatchWorkItem { [weak process] in
+            if let process, process.isRunning { process.terminate() }
+        }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: killer)
 
         // Drain both pipes concurrently so a chatty stderr can't block the child.
@@ -70,6 +77,8 @@ enum Git {
         group.wait()
         process.waitUntilExit()
         killer.cancel()
+        try? out.fileHandleForReading.close()
+        try? err.fileHandleForReading.close()
 
         return GitOutput(
             status: process.terminationStatus,
